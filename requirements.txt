@@ -1,0 +1,11 @@
+PyQt6>=6.4.0
+PyAudio>=0.2.13
+pyautogui>=0.9.54
+numpy>=1.24.0
+vosk>=0.3.45
+scipy>=1.10.0
+pyperclip>=1.8.0
+torch==2.5.1
+torchaudio==2.5.1
+sentencepiece==0.2.0
+gigaam @ git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85

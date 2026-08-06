@@ -1,0 +1,49 @@
+# Python
+.venv/
+venv/
+.build-venv/
+.build-vendor/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Build outputs
+build/
+dist/
+work/
+outputs/
+*.spec.bak
+*.zip
+*.7z
+*.exe
+
+# Local configuration and logs
+config.json
+*.log
+
+# Private audio, transcripts, and learning data
+DATASET/
+dataset/
+learning/
+*.wav
+*.mp3
+*.flac
+training-manifest.tsv
+
+# Large ASR models
+models/*
+!models/README.md
+*.ckpt
+*.model
+*.onnx
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
