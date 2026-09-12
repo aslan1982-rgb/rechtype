@@ -8,7 +8,8 @@ RechType использует стороннее программное обес
 |---|---|---|
 | [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) | интерфейс и системный трей | GPL v3 или коммерческая лицензия Riverbank |
 | [Qt](https://www.qt.io/licensing/open-source-lgpl-obligations) | нативный GUI-фреймворк | LGPL/GPL или коммерческая лицензия, в зависимости от модуля |
-| [GigaAM](https://github.com/salute-developers/GigaAM) | основное распознавание русской речи | MIT |
+| [GigaAM](https://github.com/salute-developers/GigaAM) | GigaAM v3 e2e RNNT для диктовки и файлов | MIT |
+| [GigaAM Multilingual](https://huggingface.co/ai-sage/GigaAM-Multilingual) | выбираемая Large 600M модель для файлов | MIT |
 | [Vosk API](https://github.com/alphacep/vosk-api) | резервное распознавание | Apache-2.0 |
 | [Vosk models](https://alphacephei.com/vosk/models) | модель `vosk-model-small-ru-0.22` | Apache-2.0 |
 | [PyTorch](https://github.com/pytorch/pytorch) | выполнение GigaAM | BSD-3-Clause |

@@ -5,6 +5,8 @@
   - Второе нажатие останавливает запись и вставляет распознанный текст
 """
 
+import gc
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -19,7 +21,12 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from voiceflow import __version__
 from voiceflow.config import load_config, save_config
 from voiceflow.audio import AudioRecorder
-from voiceflow.recognizer import create_recognizer
+from voiceflow.recognizer import (
+    DEFAULT_FILE_MODEL_ID,
+    FILE_MODEL_SPECS,
+    create_file_recognizer,
+    create_recognizer,
+)
 from voiceflow.history import TranscriptionHistory
 from voiceflow.overlay import RecordingOverlay
 from voiceflow.hotkey import GlobalHotkeyListener
@@ -30,6 +37,31 @@ from voiceflow.window import TranscriptionWindow
 
 
 SINGLE_INSTANCE_NAME = "RechType-Desktop-v1"
+DOWNLOAD_DISK_MARGIN_BYTES = 512 * 1024 * 1024
+
+
+def _file_model_download_fits(primary, download_bytes: int) -> bool:
+    """Account for an incomplete checkpoint that the loader will replace."""
+    disk_probe = Path(primary.model_dir)
+    while not disk_probe.exists() and disk_probe != disk_probe.parent:
+        disk_probe = disk_probe.parent
+    try:
+        free_bytes = shutil.disk_usage(disk_probe).free
+    except OSError:
+        # Let the loader surface a concrete error if capacity cannot be read.
+        return True
+
+    reclaimable_bytes = 0
+    try:
+        checkpoint = Path(primary.checkpoint_path)
+        if checkpoint.is_file():
+            reclaimable_bytes = checkpoint.stat().st_size
+    except (OSError, TypeError):
+        pass
+    return (
+        free_bytes + reclaimable_bytes
+        >= int(download_bytes) + DOWNLOAD_DISK_MARGIN_BYTES
+    )
 
 
 class RecognitionWorker(QThread):
@@ -54,7 +86,7 @@ class RecognitionWorker(QThread):
 class FileRecognitionWorker(QThread):
     """Decode a local audio/video file and recognize it off the GUI thread."""
 
-    text_ready = pyqtSignal(str, str)
+    text_ready = pyqtSignal(str, str, object)
     error_occurred = pyqtSignal(str)
 
     def __init__(self, media_path: str, recognizer):
@@ -66,7 +98,11 @@ class FileRecognitionWorker(QThread):
         try:
             wav_bytes = media_to_wav_bytes(self.media_path)
             text = self.recognizer.recognize(wav_bytes)
-            self.text_ready.emit(text, self.recognizer.engine_name)
+            self.text_ready.emit(
+                text,
+                self.recognizer.engine_name,
+                getattr(self.recognizer, "last_fallback_reason", None),
+            )
         except Exception as error:
             self.error_occurred.emit(str(error))
 
@@ -103,7 +139,11 @@ class RechTypeApp(QObject):
         self.recognizer = create_recognizer(self.config)
         self.history = TranscriptionHistory()
         self.overlay = RecordingOverlay()
-        self.transcription_window = TranscriptionWindow()
+        self.transcription_window = TranscriptionWindow(
+            default_model=self.config.get(
+                "file_gigaam_model", DEFAULT_FILE_MODEL_ID
+            )
+        )
         self.transcription_window.transcription_requested.connect(
             self._start_file_transcription
         )
@@ -115,6 +155,8 @@ class RechTypeApp(QObject):
         self._level_thread = None
         self.worker = None
         self._file_worker = None
+        self._file_recognizer_id = None
+        self._file_recognizer = None
         self._file_result = None
         self._file_error_message = None
 
@@ -316,7 +358,7 @@ class RechTypeApp(QObject):
             5000,
         )
 
-    def _start_file_transcription(self, media_path: str):
+    def _start_file_transcription(self, media_path: str, model_id: str):
         """Start decoding and recognizing one selected media file."""
         if self._recording:
             self.transcription_window.show_error(
@@ -329,22 +371,68 @@ class RechTypeApp(QObject):
             )
             return
 
+        try:
+            if self._file_recognizer_id != model_id or self._file_recognizer is None:
+                # Retain only the last file model. Keeping both 220M and 600M
+                # models resident would waste several gigabytes of RAM.
+                self._file_recognizer = None
+                self._file_recognizer_id = None
+                gc.collect()
+                self._file_recognizer = create_file_recognizer(
+                    self.config, model_id
+                )
+                self._file_recognizer_id = model_id
+        except (OSError, TypeError, ValueError) as error:
+            self.transcription_window.show_error(str(error))
+            return
+
+        if self.config.get("file_gigaam_model") != model_id:
+            self.config["file_gigaam_model"] = model_id
+            try:
+                save_config(self.config)
+            except OSError as error:
+                print(f"[RechType] Не удалось сохранить выбор модели: {error}")
+
+        primary = getattr(self._file_recognizer, "primary", None)
+        model_needs_download = bool(
+            primary is not None
+            and getattr(primary, "allow_download", False)
+            and not getattr(primary, "model_available", True)
+        )
+        if model_needs_download:
+            download_bytes = int(
+                FILE_MODEL_SPECS.get(model_id, {}).get("download_bytes", 0)
+            )
+            if not _file_model_download_fits(primary, download_bytes):
+                self.transcription_window.show_error(
+                    "Недостаточно места для загрузки выбранной модели. "
+                    "Освободите не менее 2,7 ГиБ и повторите попытку."
+                )
+                return
+
         self._processing = True
         self._file_result = None
         self._file_error_message = None
-        self.transcription_window.set_busy(
-            True,
-            "Извлекаю аудиодорожку и распознаю речь. Для длинного файла это может занять время…",
+        status_message = (
+            f"Подготавливаю файл и загружаю {FILE_MODEL_SPECS[model_id]['label']} "
+            "(около 2,18 ГиБ). Не закрывайте приложение…"
+            if model_needs_download
+            else "Извлекаю аудиодорожку и распознаю речь. Для длинного файла это может занять время…"
         )
-        self._file_worker = FileRecognitionWorker(media_path, self.recognizer)
+        self.transcription_window.set_busy(True, status_message)
+        self._file_worker = FileRecognitionWorker(
+            media_path, self._file_recognizer
+        )
         self._file_worker.text_ready.connect(self._on_file_text_ready)
         self._file_worker.error_occurred.connect(self._on_file_error)
         self._file_worker.finished.connect(self._on_file_worker_finished)
         self._file_worker.start()
 
-    def _on_file_text_ready(self, text: str, engine_name: str):
+    def _on_file_text_ready(
+        self, text: str, engine_name: str, fallback_reason: str | None
+    ):
         """Keep a file result until its worker has fully stopped."""
-        self._file_result = (text, engine_name)
+        self._file_result = (text, engine_name, fallback_reason)
 
     def _on_file_error(self, error: str):
         """Keep a worker error until its thread has fully stopped."""
@@ -373,7 +461,7 @@ class RechTypeApp(QObject):
             self.show_main_window()
             return
 
-        text, engine_name = result
+        text, engine_name, fallback_reason = result
         self.transcription_window.set_result(text, engine_name)
         self.show_main_window()
         if text.strip():
@@ -383,7 +471,6 @@ class RechTypeApp(QObject):
                 QSystemTrayIcon.MessageIcon.Information,
                 3000,
             )
-        fallback_reason = getattr(self.recognizer, "last_fallback_reason", None)
         if fallback_reason:
             self.tray_icon.showMessage(
                 "RechType — резервный режим",
@@ -513,10 +600,11 @@ class RechTypeApp(QObject):
             f"<p><b>Версия:</b> {__version__}</p>"
             "<p>Приложение для голосовой диктовки с локальным распознаванием речи.</p>"
             "<p><b>Файлы:</b> транскрибация аудио и видео в главном окне</p>"
-            "<p><b>Модель:</b> GigaAM-v3 RNNT (Vosk как резерв)</p>"
+            "<p><b>Диктовка:</b> GigaAM v3 e2e RNNT (Vosk как резерв)</p>"
+            "<p><b>Файлы:</b> выбираемая GigaAM Multilingual Large 600M или v3 e2e RNNT</p>"
             "<p><b>Обучение:</b> исправления сохраняются локально через меню в трее</p>"
             "<p><b>Горячая клавиша:</b> Ctrl+Space (нажать для старта/остановки)</p>"
-            "<p>Приложение работает полностью офлайн.</p>"
+            "<p>Распознавание выполняется локально. Сеть нужна только для первой загрузки Large-модели.</p>"
         )
 
     def _tray_activated(self, reason):

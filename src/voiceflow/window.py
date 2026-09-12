@@ -7,6 +7,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -20,17 +21,21 @@ from PyQt6.QtWidgets import (
 )
 
 from voiceflow.media import MEDIA_FILE_FILTER
+from voiceflow.recognizer import DEFAULT_FILE_MODEL_ID, FILE_MODEL_SPECS
 
 
 class TranscriptionWindow(QWidget):
     """Small desktop window for choosing a media file and reading its text."""
 
-    transcription_requested = pyqtSignal(str)
+    transcription_requested = pyqtSignal(str, str)
 
-    def __init__(self):
+    def __init__(self, default_model: str = DEFAULT_FILE_MODEL_ID):
         super().__init__()
         self._selected_path: Path | None = None
         self._busy = False
+        self._default_model = (
+            default_model if default_model in FILE_MODEL_SPECS else DEFAULT_FILE_MODEL_ID
+        )
         self.setWindowTitle("RechType — транскрибация файлов")
         self.setMinimumSize(720, 520)
         self.resize(820, 620)
@@ -63,6 +68,24 @@ class TranscriptionWindow(QWidget):
         self.choose_button.clicked.connect(self._choose_file)
         file_row.addWidget(self.choose_button)
         layout.addLayout(file_row)
+
+        model_row = QHBoxLayout()
+        model_label = QLabel("Модель для файла:")
+        model_row.addWidget(model_label)
+        self.model_combo = QComboBox()
+        for model_id, spec in FILE_MODEL_SPECS.items():
+            self.model_combo.addItem(spec["label"], model_id)
+        default_index = self.model_combo.findData(self._default_model)
+        self.model_combo.setCurrentIndex(max(0, default_index))
+        self.model_combo.currentIndexChanged.connect(self._update_model_description)
+        model_row.addWidget(self.model_combo, 1)
+        layout.addLayout(model_row)
+
+        self.model_description = QLabel()
+        self.model_description.setWordWrap(True)
+        self.model_description.setStyleSheet("color: #666;")
+        layout.addWidget(self.model_description)
+        self._update_model_description()
 
         self.transcribe_button = QPushButton("Транскрибировать")
         self.transcribe_button.setEnabled(False)
@@ -134,11 +157,24 @@ class TranscriptionWindow(QWidget):
         if not self._selected_path.is_file():
             self.show_error("Выбранный файл больше не существует.")
             return
-        self.transcription_requested.emit(str(self._selected_path))
+        self.transcription_requested.emit(
+            str(self._selected_path), self.current_model_id
+        )
+
+    @property
+    def current_model_id(self) -> str:
+        model_id = self.model_combo.currentData()
+        return model_id if model_id in FILE_MODEL_SPECS else DEFAULT_FILE_MODEL_ID
+
+    def _update_model_description(self) -> None:
+        self.model_description.setText(
+            FILE_MODEL_SPECS[self.current_model_id]["description"]
+        )
 
     def set_busy(self, busy: bool, message: str | None = None) -> None:
         self._busy = busy
         self.choose_button.setEnabled(not busy)
+        self.model_combo.setEnabled(not busy)
         self.transcribe_button.setEnabled(
             not busy
             and self._selected_path is not None

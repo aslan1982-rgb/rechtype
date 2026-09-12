@@ -13,7 +13,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from voiceflow.recognizer import GigaAMRecognizer, VoskRecognizer  # noqa: E402
+from voiceflow.recognizer import (  # noqa: E402
+    FILE_MODEL_SPECS,
+    GigaAMRecognizer,
+    VoskRecognizer,
+)
 
 
 def tokens(text: str) -> list[str]:
@@ -58,12 +62,21 @@ def main() -> None:
     parser.add_argument("--audio", required=True, type=Path)
     parser.add_argument("--reference", required=True, type=Path)
     parser.add_argument("--engine", choices=["gigaam", "vosk"], required=True)
+    parser.add_argument(
+        "--gigaam-model",
+        choices=FILE_MODEL_SPECS,
+        default="v3_e2e_rnnt",
+    )
     parser.add_argument("--model-dir", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
 
     if args.engine == "gigaam":
-        recognizer = GigaAMRecognizer(model_dir=args.model_dir)
+        recognizer = GigaAMRecognizer(
+            model_name=args.gigaam_model,
+            model_dir=args.model_dir,
+            allow_download=args.gigaam_model == "multilingual_large_ctc",
+        )
     else:
         recognizer = VoskRecognizer(model_path=args.model_dir)
 

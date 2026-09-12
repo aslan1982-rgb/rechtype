@@ -35,11 +35,15 @@ a = Analysis(
     datas=datas
     + [
         (str(model_root / "vosk-model-small-ru-0.22"), "models/vosk-model-small-ru-0.22"),
-        (str(model_root / "gigaam"), "models/gigaam"),
+        (str(model_root / "gigaam" / "v3_e2e_rnnt.ckpt"), "models/gigaam"),
+        (
+            str(model_root / "gigaam" / "v3_e2e_rnnt_tokenizer.model"),
+            "models/gigaam",
+        ),
         ("LICENSE", "."),
         ("THIRD_PARTY_NOTICES.md", "."),
         ("THIRD_PARTY_LICENSES", "THIRD_PARTY_LICENSES"),
-        ("RELEASE-NOTES-v0.0.2.txt", "."),
+        ("RELEASE-NOTES-v0.0.3.txt", "."),
     ],
     hiddenimports=hiddenimports
     + [
