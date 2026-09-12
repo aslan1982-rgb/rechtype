@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QObject, pyqtSignal, QThread, QUrl
 from PyQt6.QtGui import QIcon, QAction, QDesktopServices
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 from voiceflow import __version__
 from voiceflow.config import load_config, save_config
@@ -22,8 +23,13 @@ from voiceflow.recognizer import create_recognizer
 from voiceflow.history import TranscriptionHistory
 from voiceflow.overlay import RecordingOverlay
 from voiceflow.hotkey import GlobalHotkeyListener
+from voiceflow.media import media_to_wav_bytes
 from voiceflow.paste import paste_text
 from voiceflow.paste_clipboard import paste_text_clipboard
+from voiceflow.window import TranscriptionWindow
+
+
+SINGLE_INSTANCE_NAME = "RechType-Desktop-v1"
 
 
 class RecognitionWorker(QThread):
@@ -43,6 +49,26 @@ class RecognitionWorker(QThread):
             self.text_ready.emit(text)
         except Exception as e:
             self.error_occurred.emit(str(e))
+
+
+class FileRecognitionWorker(QThread):
+    """Decode a local audio/video file and recognize it off the GUI thread."""
+
+    text_ready = pyqtSignal(str, str)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, media_path: str, recognizer):
+        super().__init__()
+        self.media_path = media_path
+        self.recognizer = recognizer
+
+    def run(self):
+        try:
+            wav_bytes = media_to_wav_bytes(self.media_path)
+            text = self.recognizer.recognize(wav_bytes)
+            self.text_ready.emit(text, self.recognizer.engine_name)
+        except Exception as error:
+            self.error_occurred.emit(str(error))
 
 
 class AudioLevelThread(QThread):
@@ -77,12 +103,20 @@ class RechTypeApp(QObject):
         self.recognizer = create_recognizer(self.config)
         self.history = TranscriptionHistory()
         self.overlay = RecordingOverlay()
+        self.transcription_window = TranscriptionWindow()
+        self.transcription_window.transcription_requested.connect(
+            self._start_file_transcription
+        )
 
         self._recording = False
         self._processing = False
         self._pending_wav_bytes = None
         self._listener = None
         self._level_thread = None
+        self.worker = None
+        self._file_worker = None
+        self._file_result = None
+        self._file_error_message = None
 
         # RegisterHotKey runs a native message loop on a worker thread. Qt
         # safely queues this signal back to the GUI thread.
@@ -97,6 +131,16 @@ class RechTypeApp(QObject):
         self.tray_icon.setIcon(self._create_icon())
 
         menu = QMenu()
+
+        open_action = QAction("🗎 Открыть RechType", menu)
+        open_action.triggered.connect(self.show_main_window)
+        menu.addAction(open_action)
+
+        file_action = QAction("🎧 Транскрибировать файл", menu)
+        file_action.triggered.connect(self.show_main_window)
+        menu.addAction(file_action)
+
+        menu.addSeparator()
 
         mic_action = QAction("🎤 Выбрать микрофон", menu)
         mic_action.triggered.connect(self._select_microphone)
@@ -130,10 +174,16 @@ class RechTypeApp(QObject):
 
         self.tray_icon.showMessage(
             "RechType",
-            "Нажмите Ctrl+Space для начала записи. Нажмите ещё раз для остановки.",
+            "Откройте окно для транскрибации файла или нажмите Ctrl+Space для диктовки.",
             QSystemTrayIcon.MessageIcon.Information,
             3000,
         )
+
+    def show_main_window(self):
+        """Show and focus the file transcription window."""
+        self.transcription_window.show()
+        self.transcription_window.raise_()
+        self.transcription_window.activateWindow()
 
     def _create_icon(self):
         """Создать иконку для трея."""
@@ -266,6 +316,82 @@ class RechTypeApp(QObject):
             5000,
         )
 
+    def _start_file_transcription(self, media_path: str):
+        """Start decoding and recognizing one selected media file."""
+        if self._recording:
+            self.transcription_window.show_error(
+                "Сначала остановите запись с микрофона повторным нажатием горячей клавиши."
+            )
+            return
+        if self._processing:
+            self.transcription_window.show_error(
+                "Дождитесь завершения текущего распознавания."
+            )
+            return
+
+        self._processing = True
+        self._file_result = None
+        self._file_error_message = None
+        self.transcription_window.set_busy(
+            True,
+            "Извлекаю аудиодорожку и распознаю речь. Для длинного файла это может занять время…",
+        )
+        self._file_worker = FileRecognitionWorker(media_path, self.recognizer)
+        self._file_worker.text_ready.connect(self._on_file_text_ready)
+        self._file_worker.error_occurred.connect(self._on_file_error)
+        self._file_worker.finished.connect(self._on_file_worker_finished)
+        self._file_worker.start()
+
+    def _on_file_text_ready(self, text: str, engine_name: str):
+        """Keep a file result until its worker has fully stopped."""
+        self._file_result = (text, engine_name)
+
+    def _on_file_error(self, error: str):
+        """Keep a worker error until its thread has fully stopped."""
+        self._file_error_message = error
+
+    def _on_file_worker_finished(self):
+        worker = self.sender()
+        if worker is not self._file_worker:
+            if worker is not None:
+                worker.deleteLater()
+            return
+        self._file_worker = None
+        self._processing = False
+        error = self._file_error_message
+        result = self._file_result
+        self._file_error_message = None
+        self._file_result = None
+        if worker is not None:
+            worker.deleteLater()
+        if error:
+            self.transcription_window.show_error(error)
+            self.show_main_window()
+            return
+        if result is None:
+            self.transcription_window.show_error("Транскрибация завершилась без результата.")
+            self.show_main_window()
+            return
+
+        text, engine_name = result
+        self.transcription_window.set_result(text, engine_name)
+        self.show_main_window()
+        if text.strip():
+            self.tray_icon.showMessage(
+                "RechType",
+                "Транскрибация файла завершена.",
+                QSystemTrayIcon.MessageIcon.Information,
+                3000,
+            )
+        fallback_reason = getattr(self.recognizer, "last_fallback_reason", None)
+        if fallback_reason:
+            self.tray_icon.showMessage(
+                "RechType — резервный режим",
+                "GigaAM временно недоступна, файл распознан через Vosk.",
+                QSystemTrayIcon.MessageIcon.Warning,
+                4000,
+            )
+
     def _correct_last_transcription(self):
         """Let the user explicitly create a trusted audio/text pair."""
         record = self.history.last_record()
@@ -386,6 +512,7 @@ class RechTypeApp(QObject):
             "<h2>RechType</h2>"
             f"<p><b>Версия:</b> {__version__}</p>"
             "<p>Приложение для голосовой диктовки с локальным распознаванием речи.</p>"
+            "<p><b>Файлы:</b> транскрибация аудио и видео в главном окне</p>"
             "<p><b>Модель:</b> GigaAM-v3 RNNT (Vosk как резерв)</p>"
             "<p><b>Обучение:</b> исправления сохраняются локально через меню в трее</p>"
             "<p><b>Горячая клавиша:</b> Ctrl+Space (нажать для старта/остановки)</p>"
@@ -395,23 +522,58 @@ class RechTypeApp(QObject):
     def _tray_activated(self, reason):
         """Обработка клика по иконке трея."""
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self._show_about()
+            self.show_main_window()
 
     def _exit(self):
         """Завершить работу."""
+        recognition_running = self.worker is not None and self.worker.isRunning()
+        file_recognition_running = (
+            self._file_worker is not None and self._file_worker.isRunning()
+        )
+        if recognition_running or file_recognition_running:
+            QMessageBox.information(
+                self.transcription_window,
+                "RechType",
+                "Дождитесь завершения распознавания перед выходом.",
+            )
+            return
         self._recording = False
         if self._listener:
             self._listener.stop()
         if self._level_thread:
             self._level_thread.stop()
         self.recorder.close()
+        self.transcription_window.close()
         self.tray_icon.hide()
         QApplication.quit()
 
 
+def _notify_running_instance() -> bool:
+    """Ask an existing RechType process to show its window, if one exists."""
+    socket = QLocalSocket()
+    socket.connectToServer(SINGLE_INSTANCE_NAME)
+    if not socket.waitForConnected(350):
+        return False
+    socket.write(b"show")
+    socket.waitForBytesWritten(350)
+    socket.disconnectFromServer()
+    return True
+
+
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName("RechType")
+    app.setApplicationVersion(__version__)
     app.setQuitOnLastWindowClosed(False)
+
+    if _notify_running_instance():
+        return 0
+
+    QLocalServer.removeServer(SINGLE_INSTANCE_NAME)
+    instance_server = QLocalServer()
+    if not instance_server.listen(SINGLE_INSTANCE_NAME):
+        QMessageBox.critical(None, "RechType", "Не удалось запустить единственный экземпляр приложения.")
+        return 1
 
     # Отладочная версия: НЕ скрываем консоль!
     # try:
@@ -421,7 +583,21 @@ def main():
     #     pass
 
     rechtype = RechTypeApp()
-    sys.exit(app.exec())
+
+    def handle_instance_message():
+        while instance_server.hasPendingConnections():
+            socket = instance_server.nextPendingConnection()
+            if socket is None:
+                continue
+            socket.waitForReadyRead(350)
+            if bytes(socket.readAll()).strip() == b"show":
+                rechtype.show_main_window()
+            socket.disconnectFromServer()
+
+    instance_server.newConnection.connect(handle_instance_message)
+    if "--background" not in sys.argv and "--minimized" not in sys.argv:
+        rechtype.show_main_window()
+    return app.exec()
 
 
 if __name__ == "__main__":

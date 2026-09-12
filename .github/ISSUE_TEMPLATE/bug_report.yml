@@ -10,7 +10,7 @@ body:
     id: version
     attributes:
       label: Версия RechType
-      placeholder: 0.0.1
+      placeholder: 0.0.2
     validations:
       required: true
   - type: input

@@ -19,11 +19,12 @@ packages = [
     package_files("pyaudio"),
     package_files("gigaam"),
     package_files("sentencepiece"),
+    package_files("av"),
     package_files("soundfile"),
     package_files("onnxruntime"),
 ]
-binaries = sum((item[0] for item in packages), [])
-datas = sum((item[1] for item in packages), [])
+binaries = sum((item[1] for item in packages), [])
+datas = sum((item[0] for item in packages), [])
 hiddenimports = sum((item[2] for item in packages), [])
 model_root = Path(os.environ.get("RECHTYPE_MODEL_ROOT", "models")).resolve()
 
@@ -37,7 +38,8 @@ a = Analysis(
         (str(model_root / "gigaam"), "models/gigaam"),
         ("LICENSE", "."),
         ("THIRD_PARTY_NOTICES.md", "."),
-        ("RELEASE-NOTES-v0.0.1.txt", "."),
+        ("THIRD_PARTY_LICENSES", "THIRD_PARTY_LICENSES"),
+        ("RELEASE-NOTES-v0.0.2.txt", "."),
     ],
     hiddenimports=hiddenimports
     + [
@@ -54,6 +56,41 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
+
+# Qt on Windows resolves the unversioned ``icuuc.dll`` to the operating-system
+# ICU.  A polluted build PATH (for example, one containing Poppler) can make
+# PyInstaller collect an incompatible third-party ICU instead and break Qt at
+# startup.  Keep such accidental copies out of the frozen runtime.
+excluded_runtime_binaries = {
+    # Accidental copies from polluted build environments.
+    "icuuc.dll",
+    "icudt78.dll",
+    # Qt plugins/modules not used by the text-only QWidget interface.
+    "qt6pdf.dll",
+    "qt6svg.dll",
+    "qcertonlybackend.dll",
+    "qgif.dll",
+    "qicns.dll",
+    "qico.dll",
+    "qjpeg.dll",
+    "qminimal.dll",
+    "qoffscreen.dll",
+    "qopensslbackend.dll",
+    "qpdf.dll",
+    "qschannelbackend.dll",
+    "qsvg.dll",
+    "qsvgicon.dll",
+    "qtga.dll",
+    "qtiff.dll",
+    "qtuiotouchplugin.dll",
+    "qwbmp.dll",
+    "qwebp.dll",
+}
+a.binaries = [
+    entry
+    for entry in a.binaries
+    if Path(entry[0]).name.lower() not in excluded_runtime_binaries
+]
 
 pyz = PYZ(a.pure)
 

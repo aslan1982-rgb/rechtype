@@ -39,17 +39,31 @@ python -m PyInstaller --noconfirm --clean rechtype.spec
 - Запустите программу на чистой Windows 10 или 11 без установленного Python и ffmpeg.
 - Убедитесь, что используется `GigaAM v3_e2e_rnnt`, а не резервный Vosk.
 - Проверьте запись дольше 25 секунд, таймер, остановку вторым нажатием и вставку в несколько приложений.
+- С очищенным `PATH` проверьте импорт WAV, MP3 и видео MP4 с аудиодорожкой.
+- Проверьте понятную ошибку для видео без аудиодорожки и повреждённого файла.
+- Убедитесь, что повторный запуск открывает существующее окно, а `--background` оставляет его скрытым.
 - Проверьте, что приложение не создаёт и не отправляет сетевые запросы во время диктовки.
+
+Для машинной end-to-end проверки файла используйте скрытый режим сборки:
+
+```powershell
+dist\RechType\RechType.exe --media-self-test work\sample.mp4 work\media-report.json
+```
 
 ## 5. Архив и контрольная сумма
 
 ```powershell
-Compress-Archive -Path dist\RechType -DestinationPath RechType-v0.0.1.zip
-Get-FileHash RechType-v0.0.1.zip -Algorithm SHA256
+$archive = "RechType-v0.0.2-Windows-x64.zip"
+$checksum = "RechType-v0.0.2-Windows-x64-SHA256.txt"
+Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.md, RELEASE-NOTES-v0.0.2.txt dist\RechType
+Copy-Item THIRD_PARTY_LICENSES dist\RechType -Recurse
+Compress-Archive -Path dist\RechType -DestinationPath $archive
+$sha256 = (Get-FileHash $archive -Algorithm SHA256).Hash
+"$sha256  $archive" | Set-Content $checksum -Encoding ascii
 ```
 
 Архив не добавляется в Git. Прикрепите его и файл с SHA-256 к GitHub Release соответствующего тега.
 
 ## 6. Лицензии
 
-В бинарный архив должны войти `LICENSE`, `THIRD_PARTY_NOTICES.md` и применимые тексты лицензий сторонних пакетов и моделей. Перед публикацией повторно проверьте актуальные условия PyQt6, Qt, GigaAM и Vosk.
+В бинарный архив должны войти `README.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, каталог `THIRD_PARTY_LICENSES`, заметки текущего релиза и применимые тексты лицензий сторонних пакетов и моделей. Перед публикацией повторно проверьте актуальные условия PyQt6, Qt, GigaAM, Vosk, PyAV и включённой в wheel сборки FFmpeg.
