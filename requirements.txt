@@ -8,7 +8,7 @@ av==18.1.0
 vosk>=0.3.45
 scipy>=1.10.0
 pyperclip>=1.8.0
-torch==2.5.1
+torch==2.13.0
 torchaudio==2.5.1
 sentencepiece==0.2.0
 gigaam @ git+https://github.com/salute-developers/GigaAM.git@559d88d6b72541412743929f633a6ae7c9950b85
